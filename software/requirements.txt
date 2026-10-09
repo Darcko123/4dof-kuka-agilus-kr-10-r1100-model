@@ -1,0 +1,4 @@
+click
+serial
+serial-tool
+rich
