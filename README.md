@@ -1,0 +1,1 @@
+# 4dof-kuka-agilus-kr-10-r1100-model
