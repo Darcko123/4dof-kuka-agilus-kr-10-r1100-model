@@ -20,10 +20,15 @@ from ..utils.output import (
     STYLES,
     print_success,
     print_error,
+    print_warning,
     print_info,
     print_dim,
     print_example,
 )
+
+from . import menu, protocol as proto, ui
+from .robot import Robot
+from .transport import list_devices
 
 import platform
 from pathlib import Path
@@ -55,16 +60,23 @@ def print_header(module=None):
     else:
         label = "kukaagilus"
 
-    ascii_art = f"""      :=--             --=-       |
-      -====-         -=====       |
-      :===================-       |
-       ===================:       |
-  -   :==--===========--==-   -   |  {label}
- -===:===-   :=====-   -==-.-=--  |  v{VERSION_NUMBER}
---    ====-   :===-   -====    -- |  {FUNNY_PHRASE}
--=:   :===================-   .=- |
- ---=-- -===============-  -=---  |
- ---       --=======--        --  |"""
+    ascii_art = f"""
+           ###            |
+          # ###           |
+         # ### #          |
+     ## # ##### # ##      |
+    ##### ##### #####     |
+   ######   #   ## ###    |
+  #### ###  #  ### ####   |
+  ##   ### ######    ##   |  {label}
+ ###############      ##  |  v{VERSION_NUMBER}
+ ### #########  ######### |  {FUNNY_PHRASE}
+######################### |
+   ############# #####    |
+     #### ##########      |
+        #########         | 
+           ###            |
+"""
 
     colored_ascii = f"[cyan bold]{ascii_art}[/cyan bold]"
 
@@ -80,10 +92,25 @@ def print_header(module=None):
 # ============= Comandos de autocompletado para la shell =============
 
 
+@click.group(name="kukaagilus")
+def cli():
+    """Control del brazo KUKA Agilus KR10 (4 GDL) sobre STM32F446
+
+    La interfaz vive aquí; el firmware se ocupa del control, la cinemática y
+    los servomotores. El enlace es USB-CDC.
+    """
+    pass
+
+
 @click.group()
 def completion():
-    """"""
+    """
+    Instalar el autocompletado de la CLI en bash, zsh o fish
+    """
     pass
+
+
+cli.add_command(completion)
 
 
 @completion.command("install")
@@ -313,10 +340,207 @@ def completion_install(shell):
     elif shell == "fish":
         print_info("Completion is active immediately in new fish sessions.")
 
+
+# ============= Conexión con el robot =============
+
+_port_option = click.option(
+    "--port",
+    "-p",
+    default=None,
+    help="Puerto USB-CDC del STM32 (autodetectado si se omite)",
+)
+
+
+def _conectar(port: str | None) -> Robot:
+    """Abre el enlace con el STM32 o aborta mostrando el motivo."""
+    try:
+        return Robot.connect(port)
+    except ConnectionError as e:
+        print_error(str(e))
+        raise SystemExit(1)
+    except serial.SerialException as e:
+        print_error(f"Error de puerto serie: {e}")
+        raise SystemExit(1)
+
+
+def _fallo(e: Exception) -> None:
+    """Traduce un fallo de protocolo a un mensaje de error y sale."""
+    print_error(str(e))
+    raise SystemExit(1)
+
+
+@cli.command("ports")
+def ports():
+    """Lista los puertos USB-CDC disponibles"""
+    found = list_devices()
+    if not found:
+        print_warning("No se encontró ningún puerto USB-CDC del STM32")
+        return
+    for device in found:
+        console.print(f"  [green]{device}[/green]")
+
+
+@cli.command("connect")
+@_port_option
+def connect(port):
+    """Abre el enlace con el robot y muestra su identidad"""
+    robot = _conectar(port)
+    try:
+        info = robot.info()
+        estado = robot.status()
+        puerto = robot.t.port
+    except (proto.ProtocolError, proto.TimeoutError_) as e:
+        _fallo(e)
+    finally:
+        robot.close()
+
+    print_success(f"Conectado a {puerto}")
+    print_info(
+        f"{info.model} · firmware {info.version} · "
+        f"{info.joints} GDL · OLED {'OK' if info.oled_ok else 'no disponible'}"
+    )
+    print_dim(f"Movimiento: {info.move_ms} ms · Secuencia: {info.seq_length} poses")
+    print_dim("")
+    print_dim(
+        f"Efector: X {estado.x:.2f}  Y {estado.y:.2f}  Z {estado.z:.2f} mm  "
+        f"Pitch {estado.pitch:.2f}°  Yaw {estado.yaw:.2f}°"
+    )
+
+
+@cli.command("status")
+@_port_option
+def status(port):
+    """Muestra la configuración articular y la pose del efector"""
+    robot = _conectar(port)
+    try:
+        estado = robot.status()
+        limites = robot.limits()
+    except (proto.ProtocolError, proto.TimeoutError_) as e:
+        _fallo(e)
+    finally:
+        robot.close()
+
+    ui.show_position(estado, limites)
+
+
+@cli.command("home")
+@_port_option
+def home_cmd(port):
+    """Lleva el brazo a la posición HOME"""
+    robot = _conectar(port)
+    try:
+        ui.show_moviendo("HOME")
+        estado = robot.home()
+        limites = robot.limits()
+    except (proto.ProtocolError, proto.TimeoutError_) as e:
+        _fallo(e)
+    finally:
+        robot.close()
+
+    print_success("Movimiento completado")
+    ui.show_arm_state(estado, limites)
+
+
+@cli.command("move")
+@click.argument("angles", nargs=proto.NUM_JOINTS, type=float, required=True)
+@_port_option
+def move(angles, port):
+    """Mueve el brazo a los ángulos articulares en GRADOS (Q1 Q2 Q3 Q4)"""
+    robot = _conectar(port)
+    try:
+        ui.show_moviendo("MANUAL")
+        estado = robot.move(list(angles))
+        limites = robot.limits()
+    except (proto.ProtocolError, proto.TimeoutError_) as e:
+        _fallo(e)
+    finally:
+        robot.close()
+
+    print_success("Movimiento completado")
+    ui.show_arm_state(estado, limites)
+
+
+@cli.command("sequence")
+@click.option("--once", is_flag=True, default=False, help="Ejecuta la secuencia y termina")
+@_port_option
+def sequence(once, port):
+    """Ejecuta la secuencia automática de prueba"""
+    robot = _conectar(port)
+    try:
+        print_info("Iniciando secuencia...")
+        robot.sequence_start()
+        while True:
+            sec = robot.sequence_poll()
+            if not sec.running:
+                break
+            ui.show_sequence(sec.step, sec.total)
+            if once:
+                robot.sequence_stop()
+                break
+    except (KeyboardInterrupt, click.Abort):
+        print_warning("Secuencia detenida")
+        robot.sequence_stop()
+        raise SystemExit(0)
+    except (proto.ProtocolError, proto.TimeoutError_) as e:
+        _fallo(e)
+    finally:
+        robot.close()
+
+    print_success("Secuencia completada")
+
+
+@cli.command("stop")
+@_port_option
+def stop(port):
+    """Aborta el movimiento o la secuencia en curso"""
+    robot = _conectar(port)
+    try:
+        estado = robot.stop()
+        limites = robot.limits()
+    except (proto.ProtocolError, proto.TimeoutError_) as e:
+        _fallo(e)
+    finally:
+        robot.close()
+
+    print_success("Movimiento detenido")
+    ui.show_arm_state(estado, limites)
+
+
+@cli.command("oled")
+@click.argument("title")
+@_port_option
+def oled(title, port):
+    """Cambia el título de la barra superior de la pantalla OLED"""
+    robot = _conectar(port)
+    try:
+        robot.oled(title)
+    except (proto.ProtocolError, proto.TimeoutError_) as e:
+        _fallo(e)
+    finally:
+        robot.close()
+    print_success(f"OLED: {title}")
+
+
+@cli.command("menu")
+@_port_option
+def menu_cmd(port):
+    """Menú interactivo con las cuatro opciones del robot"""
+    robot = _conectar(port)
+    try:
+        menu.run(robot, robot.info())
+    except (proto.ProtocolError, proto.TimeoutError_) as e:
+        _fallo(e)
+    finally:
+        robot.close()
+
+
 def main_cli() -> None:
     """Punto de entrada principal para la CLI"""
 
     if not os.environ.get("_KUKAAGILUS_COMPLETE"):
         module = next((a for a in sys.argv[1:] if not a.startswith("-")), None)
         print_header(module)
-    # Aquí se puede agregar la lógica principal de la CLI
+
+    # El nombre del programa debe ser "kukaagilus" para que las variables de
+    # autocompletado (_KUKAAGILUS_COMPLETE) se generen con ese prefijo
+    cli(prog_name="kukaagilus")
