@@ -23,6 +23,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include <math.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -36,12 +37,14 @@
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
+#if KR10_TERMINAL_MENU
 /** Estado del menú de usuario */
 typedef enum {
 	MENU_MAIN,          /**< Esperando una opción del menú principal */
 	MENU_ANGLES,        /**< Capturando los ángulos articulares */
 	MENU_SEQUENCE       /**< Secuencia de prueba en ejecución */
 } Menu_State_t;
+#endif
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
@@ -64,8 +67,20 @@ typedef enum {
 // INTERFAZ USB-CDC
 // ============================================================================
 #define CDC_TX_TIMEOUT          20U     /**< Espera máxima por mensaje si el host no lee [ms] */
-#define RX_RING_SIZE            64U     /**< Bytes recibidos pendientes de procesar */
-#define LINE_BUFFER_SIZE        32U     /**< Longitud máxima de una línea de entrada */
+#define RX_RING_SIZE            256U    /**< Bytes recibidos pendientes de procesar */
+#define LINE_BUFFER_SIZE        32U     /**< Longitud máxima de una línea de la interfaz de terminal */
+#define CMD_LINE_SIZE           96U     /**< Longitud máxima de una línea del protocolo de host */
+#define OLED_TITLE_SIZE         20U     /**< Longitud del título mostrado en la barra de la OLED */
+#define KR10_FW_VERSION         "1.1"   /**< Versión del firmware informada al host */
+#define KR10_LINE_PREFIX        "KR10:" /**< Prefijo de toda línea emitida hacia el host */
+
+/** Poner a 1 para compilar la interfaz de terminal del firmware (modo autónomo,
+ *  sin PC conectado). La interfaz de Python sustituye a este menú, por lo que
+ *  el valor por defecto es 0 y el firmware queda como agente de control.
+ *  Se puede forzar por línea de comandos con -DKR10_TERMINAL_MENU=1. */
+#ifndef KR10_TERMINAL_MENU
+#define KR10_TERMINAL_MENU      0
+#endif
 
 // Estilos para la interfaz
 #define HEADER_COLOR            COLOR_BRIGHT_CYAN
@@ -121,28 +136,41 @@ extern USBD_HandleTypeDef hUsbDeviceFS;
 /** Configuración articular de la posición HOME [rad] */
 static const float HomePose[ROBOTICS_NUM_JOINTS] = { 0.0f, 0.0f, 0.0f, 0.0f };
 
+#if KR10_TERMINAL_MENU
 /** Nombre de cada articulación para la terminal, rellenado a 6 columnas
  *  a mano porque %-6s cuenta bytes y la 'ñ' ocupa 2 en UTF-8 */
 static const char* const JointName[ROBOTICS_NUM_JOINTS] = { "Base  ", "Hombro", "Codo  ", "Muñeca" };
+#endif
 
 /** Buffer circular de recepción USB-CDC (productor: ISR USB, consumidor: lazo principal) */
 static volatile uint8_t rxRing[RX_RING_SIZE];
 static volatile uint32_t rxHead = 0;
 static volatile uint32_t rxTail = 0;
 
-/** Línea de entrada en edición */
-static char lineBuf[LINE_BUFFER_SIZE];
+/** Línea de entrada del protocolo en edición */
+static char lineBuf[CMD_LINE_SIZE];
 static uint32_t lineLen = 0;
 
+#if KR10_TERMINAL_MENU
 static Menu_State_t menuState = MENU_MAIN;
 
 /** Captura manual de ángulos */
 static uint32_t angleStep = 0;
 static float angleInput[ROBOTICS_NUM_JOINTS];
+#endif
 
-/** Secuencia de prueba */
+/** Secuencia de prueba en curso (comandada por el host) */
+static bool sequenceActive = false;
 static uint32_t sequenceStep = 0;
 static uint32_t lastMoveTick = 0;
+
+#if !KR10_TERMINAL_MENU
+/** Movimiento simple en curso: el lazo principal lo supervisa y avisa al host */
+static bool moveActive = false;
+
+/** Título mostrado en la barra de la OLED para el movimiento en curso */
+static char oledTitle[OLED_TITLE_SIZE];
+#endif
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -157,9 +185,30 @@ static Robotics_Status_t Arm_MoveTo(const float q[ROBOTICS_NUM_JOINTS], uint32_t
 static bool Arm_Update(void);
 
 static void CDC_Print(const char* str);
-static void CDC_PrintColor(const char* color, const char* msg);
 static void Display_ShowArm(const char* title);
 
+#if !KR10_TERMINAL_MENU
+/* --- Protocolo de host (interfaz de usuario en Python) ------------------- */
+static void Display_ShowError(const char* text);
+static void Host_SendLine(const char* line);
+static void Host_SendFormat(const char* fmt, ...);
+static void Host_SendState(void);
+static void Host_SendLimits(void);
+static void Host_SendSequenceState(void);
+static void Host_SendOk(void);
+static void Host_SendError(const char* reason);
+static void Host_SendAck(const char* cmd);
+static void Host_SendHello(void);
+static void Host_SequenceStep(void);
+static void Host_StopSequence(void);
+static bool Host_StartMove(const float q[ROBOTICS_NUM_JOINTS], const char* title, const char* cmd);
+static bool Host_ParseAngles(char* line, float q[ROBOTICS_NUM_JOINTS]);
+static void Host_HandleByte(uint8_t c);
+static void Host_ProcessLine(char* line);
+static bool Host_StrEqArg(const char* arg, const char* cmd);
+#else /* KR10_TERMINAL_MENU */
+
+static void CDC_PrintColor(const char* color, const char* msg);
 static void Menu_ShowHeader(const char* title);
 static uint32_t Menu_GaugeIndex(float q, const Robotics_DH_Param_t* dh);
 static void Menu_ShowMain(void);
@@ -173,6 +222,7 @@ static void Menu_SequenceStep(void);
 static void Menu_HandleByte(uint8_t c);
 static void Menu_ProcessLine(char* line);
 static void Menu_ProcessAngle(char* line);
+#endif /* KR10_TERMINAL_MENU */
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -233,7 +283,10 @@ int main(void)
 	Arm_Init();
 
 	Display_ShowArm("INICIO");
+
+#if KR10_TERMINAL_MENU
 	Menu_ShowMain();    // Si el host aún no abre el puerto, ENTER vuelve a mostrarlo
+#endif
 
   /* USER CODE END 2 */
 
@@ -246,15 +299,36 @@ int main(void)
 		{
 			uint8_t c = rxRing[rxTail];
 			rxTail = (rxTail + 1U) % RX_RING_SIZE;
+
+#if KR10_TERMINAL_MENU
 			Menu_HandleByte(c);
+#else
+			Host_HandleByte(c);
+#endif
 		}
 
 		// Avanzar el movimiento en curso y, con la secuencia activa, cuando
 		// termine y se cumpla el intervalo, comandar la siguiente pose
 		bool idle = Arm_Update();
-		if(menuState == MENU_SEQUENCE && idle && (HAL_GetTick() - lastMoveTick) >= DELAY_TEST_SEQUENCE)
+
+		#if !KR10_TERMINAL_MENU
+		// Aviso al host de que un movimiento simple terminó
+		if(moveActive && idle)
 		{
+			moveActive = false;
+			Display_ShowArm(oledTitle);
+			Host_SendOk();
+			Host_SendState();
+		}
+#endif
+
+		if(sequenceActive && idle && (HAL_GetTick() - lastMoveTick) >= DELAY_TEST_SEQUENCE)
+		{
+#if KR10_TERMINAL_MENU
 			Menu_SequenceStep();
+#else
+			Host_SequenceStep();
+#endif
 		}
     /* USER CODE END WHILE */
 
@@ -579,6 +653,7 @@ static void CDC_Print(const char* str)
     }
 }
 
+#if KR10_TERMINAL_MENU
 /**
  * @brief Envía un mensaje de una línea con color.
  *
@@ -590,6 +665,7 @@ static void CDC_PrintColor(const char* color, const char* msg)
     snprintf(buffer, sizeof(buffer), "  %s%s%s\r\n", color, msg, COLOR_RESET);
     CDC_Print(buffer);
 }
+#endif
 
 // ============================================================================
 // PANTALLA OLED
@@ -636,6 +712,519 @@ static void Display_ShowArm(const char* title)
     status_ssd = SSD1306_UpdateScreen();
 }
 
+// ============================================================================
+// PROTOCOLO DE HOST (USB-CDC, texto)
+// ============================================================================
+//
+// El firmware actúa como agente de control: la interfaz de usuario vive en
+// Python y se comunica con líneas de texto terminadas en CRLF. Todas las
+// respuestas se prefijan con KR10: para que el host las distinga de restos de
+// una sesión anterior y pueda ignorarlas con seguridad.
+//
+// Comandos (host -> firmware):
+//   PING                      -> OK PONG <fw>
+//   HELLO                     -> OK / ID / LIM / OLED ... / END
+//   STATUS                    -> OK / Q i angulo ... / POSE x y z pitch yaw / OLED n / END
+//   LIMITS                    -> OK / LIM i min max ... / END
+//   MOVE q1 q2 q3 q4           -> OK (al terminar: OK + STATE)
+//   HOME                      -> OK (al terminar: OK + STATE)
+//   SEQ START|STOP            -> OK
+//   SEQ STATUS                -> OK / SEQ i n / END
+//   OLED titulo               -> OK
+//   STOP                      -> OK (aborta movimiento en curso)
+//
+// Los ángulos viajan siempre en grados; la conversión a radianes y la
+// validación de límites se hacen aquí, igual que en la interfaz de terminal.
+// ============================================================================
+
+#if !KR10_TERMINAL_MENU
+
+/**
+  * @brief Muestra en la OLED un mensaje de error y detiene el sistema.
+  *
+  * @param text Mensaje ASCII a mostrar.
+  */
+static void Display_ShowError(const char* text)
+{
+    SSD1306_Fill(SSD1306_COLOR_BLACK);
+    SSD1306_GotoXY(0, 0);
+    // SSD1306_Puts() no acepta const, pero solo lee el puntero
+    SSD1306_Puts((char*)text, &Font_7x10, SSD1306_COLOR_WHITE);
+    SSD1306_UpdateScreen();
+    Error_Handler();
+}
+
+/**
+  * @brief Envía una línea terminada en CRLF hacia el host.
+  *
+  * @param line Cadena terminada en '\0' (sin CRLF).
+  */
+static void Host_SendLine(const char* line)
+{
+    uint32_t start = HAL_GetTick();
+
+    if(hUsbDeviceFS.dev_state != USBD_STATE_CONFIGURED)
+    {
+        return;
+    }
+
+    snprintf(buffer, sizeof(buffer), KR10_LINE_PREFIX "%s\r\n", line);
+    CDC_Print(buffer);
+
+    // No bloquear el lazo principal si el host no lee
+    (void)start;
+}
+
+/**
+  * @brief Envía una línea formateada hacia el host.
+  *
+  * @param fmt Formato printf (sin el prefijo ni el CRLF).
+  * @param ... Argumentos del formato.
+  */
+static void Host_SendFormat(const char* fmt, ...)
+{
+    char line[CMD_LINE_SIZE];
+    va_list args;
+
+    va_start(args, fmt);
+    vsnprintf(line, sizeof(line), fmt, args);
+    va_end(args);
+
+    Host_SendLine(line);
+}
+
+/**
+  * @brief Compara el primer token de una línea con un comando.
+  *
+  * @details Se detiene en el primer espacio, por lo que "MOVE 0 0 0 0" casa
+  * con "MOVE". La comparación no distingue mayúsculas porque los usuarios
+  * escriben a mano; el resto del protocolo sí es sensible.
+  *
+  * @param arg Primer token de la línea recibida.
+  * @param cmd Comando a comparar.
+  *
+  * @return true si coincide.
+  */
+static bool Host_StrEqArg(const char* arg, const char* cmd)
+{
+    while(*cmd != '\0')
+    {
+        char c = *arg++;
+
+        if(c >= 'a' && c <= 'z')
+        {
+            c = (char)(c - ('a' - 'A'));
+        }
+
+        if(c != *cmd++)
+        {
+            return false;
+        }
+    }
+
+    return (*arg == '\0' || *arg == ' ');
+}
+
+/**
+  * @brief Envía la línea de confirmación OK.
+  */
+static void Host_SendOk(void)
+{
+    Host_SendLine("OK");
+}
+
+/**
+  * @brief Envía un error seguido del fin de la respuesta.
+  *
+  * @param reason Código de error legible por el host.
+  */
+static void Host_SendError(const char* reason)
+{
+    Host_SendFormat("ERR %s", reason);
+    Host_SendLine("END");
+}
+
+/**
+  * @brief Envía el acuse de un comando y el final de la respuesta.
+  *
+  * @param cmd Nombre del comando atendido.
+  */
+static void Host_SendAck(const char* cmd)
+{
+    Host_SendFormat("OK %s", cmd);
+    Host_SendLine("END");
+}
+
+/**
+  * @brief Envía la descripción del robot (identidad y capacidades).
+  */
+static void Host_SendHello(void)
+{
+    Host_SendFormat("ID KR10 4DOF %s", KR10_FW_VERSION);
+    Host_SendFormat("JOINTS %u", (unsigned)ROBOTICS_NUM_JOINTS);
+    Host_SendFormat("MOVE_MS %u", (unsigned)SERVO_MOVE_DURATION);
+    Host_SendFormat("SEQ_LEN %u", (unsigned)TEST_SEQUENCE_LENGTH);
+    Host_SendFormat("SEQ_DELAY_MS %u", (unsigned)DELAY_TEST_SEQUENCE);
+    Host_SendFormat("OLED %d", (status_ssd == SSD1306_OK) ? 1 : 0);
+    Host_SendLine("END");
+}
+
+/**
+  * @brief Envía la cinemática actual: ángulos articulares y pose del efector.
+  */
+static void Host_SendState(void)
+{
+    for(uint32_t i = 0; i < ROBOTICS_NUM_JOINTS; i++)
+    {
+        Host_SendFormat("Q %u %.2f", (unsigned)(i + 1U), ROBOTICS_RAD2DEG(arm.q[i]));
+    }
+
+    Host_SendFormat("POSE %.2f %.2f %.2f %.2f %.2f",
+                    arm.pose.x, arm.pose.y, arm.pose.z,
+                    ROBOTICS_RAD2DEG(arm.pose.pitch), ROBOTICS_RAD2DEG(arm.pose.yaw));
+
+    Host_SendFormat("OLED %d", (status_ssd == SSD1306_OK) ? 1 : 0);
+    Host_SendLine("END");
+}
+
+/**
+  * @brief Envía los límites articulares en grados.
+  */
+static void Host_SendLimits(void)
+{
+    for(uint32_t i = 0; i < ROBOTICS_NUM_JOINTS; i++)
+    {
+        const Robotics_DH_Param_t* dh = &Robotics_DefaultDHTable[i];
+        Host_SendFormat("LIM %u %.1f %.1f", (unsigned)(i + 1U),
+                        ROBOTICS_RAD2DEG(dh->minAngle), ROBOTICS_RAD2DEG(dh->maxAngle));
+    }
+    Host_SendLine("END");
+}
+
+/**
+  * @brief Envía el avance de la secuencia automática.
+  */
+static void Host_SendSequenceState(void)
+{
+    if(!sequenceActive)
+    {
+        Host_SendLine("SEQ IDLE");
+    }
+    else
+    {
+        Host_SendFormat("SEQ %lu %u", (unsigned long)sequenceStep, (unsigned)TEST_SEQUENCE_LENGTH);
+    }
+}
+
+/**
+  * @brief Extrae cuatro ángulos en grados de una línea de comando.
+  *
+  * @details Acepta ',' o '.' como separador decimal, igual que el menú de
+  * terminal. Los valores se devuelven en radianes ya validados contra los
+  * límites articulares, de modo que todo lo que acepte el host lo acepta
+  * Robotics_SetJointAngles().
+  *
+  * @param line Línea recibida (terminada en '\0'), se modifica in situ.
+  * @param[out] q Ángulos articulares resultantes [rad].
+  *
+  * @return true si los cuatro valores son válidos.
+  */
+static bool Host_ParseAngles(char* line, float q[ROBOTICS_NUM_JOINTS])
+{
+    uint32_t count = 0;
+    char* p = line;
+
+    while(*p != '\0' && count < ROBOTICS_NUM_JOINTS)
+    {
+        char* end;
+
+        for(char* c = p; *c != '\0'; c++)
+        {
+            if(*c == ',')
+            {
+                *c = '.';
+            }
+        }
+
+        float value = ROBOTICS_DEG2RAD(strtof(p, &end));
+        if(end == p)
+        {
+            return false;
+        }
+
+        const Robotics_DH_Param_t* dh = &Robotics_DefaultDHTable[count];
+        // La comparación negada también rechaza NaN
+        if(!(value >= dh->minAngle && value <= dh->maxAngle))
+        {
+            return false;
+        }
+
+        q[count++] = value;
+        p = end;
+
+        while(*p == ' ' || *p == '\t')
+        {
+            p++;
+        }
+    }
+
+    return (count == ROBOTICS_NUM_JOINTS);
+}
+
+/**
+  * @brief Lanza un movimiento suave hacia una configuración articular.
+  *
+  * @details No bloquea: el lazo principal envía el OK y el estado cuando el
+  * movimiento termina, de modo que el host puede seguir enviando comandos
+  * (STOP, STATUS) mientras el brazo se mueve.
+  *
+  * @param q Ángulos articulares objetivo [rad].
+  * @param title Título para la barra de la OLED.
+  * @param cmd Nombre del comando para el acuse.
+  *
+  * @return true si el movimiento se ha iniciado correctamente.
+  */
+static bool Host_StartMove(const float q[ROBOTICS_NUM_JOINTS], const char* title, const char* cmd)
+{
+    if(sequenceActive)
+    {
+        Host_StopSequence();
+    }
+
+    if(Arm_MoveTo(q, SERVO_MOVE_DURATION) != ROBOTICS_OK)
+    {
+        Host_SendError("RANGE");
+        return false;
+    }
+
+    snprintf(oledTitle, sizeof(oledTitle), "%s", title);
+    moveActive = true;
+    Host_SendAck(cmd);
+    Display_ShowArm(oledTitle);
+    return true;
+}
+
+/**
+  * @brief Comanda la siguiente pose de la secuencia de prueba.
+  */
+static void Host_SequenceStep(void)
+{
+    snprintf(oledTitle, sizeof(oledTitle), "SEQ %lu/%u",
+             (unsigned long)(sequenceStep + 1U), (unsigned)TEST_SEQUENCE_LENGTH);
+
+    if(Arm_MoveTo(TestSequence[sequenceStep], SERVO_MOVE_DURATION) != ROBOTICS_OK)
+    {
+        Display_ShowError("SEQ RANGE");
+    }
+
+    // El estado se emite con el índice ya incrementado para que el host sepa
+    // cuál es la pose que se acaba de comandar
+    sequenceStep = (sequenceStep + 1U) % TEST_SEQUENCE_LENGTH;
+    lastMoveTick = HAL_GetTick();
+
+    Display_ShowArm(oledTitle);
+    Host_SendSequenceState();
+    Host_SendState();
+}
+
+/**
+  * @brief Detiene la secuencia automática si está en curso.
+  */
+static void Host_StopSequence(void)
+{
+    if(sequenceActive)
+    {
+        sequenceActive = false;
+        Display_ShowArm("DETENIDO");
+    }
+}
+
+/**
+  * @brief Arranca la secuencia automática desde la primera pose.
+  */
+static void Host_StartSequence(void)
+{
+    sequenceActive = true;
+    sequenceStep = 0;
+    lastMoveTick = HAL_GetTick() - DELAY_TEST_SEQUENCE;   // Primer paso inmediato
+    moveActive = false;
+    Host_SendAck("SEQ START");
+}
+
+/**
+  * @brief Envía la vista OLED actual al host tras un comando OLED.
+  *
+  * @param title Título ya mostrado en la pantalla.
+  */
+static void Host_SetOledTitle(const char* title)
+{
+    snprintf(oledTitle, sizeof(oledTitle), "%s", title);
+    Display_ShowArm(oledTitle);
+    Host_SendAck("OLED");
+}
+
+/**
+  * @brief Ensambla y despacha un comando recibido del host.
+  *
+  * @param line Línea recibida (terminada en '\0'), se modifica in situ.
+  */
+static void Host_ProcessLine(char* line)
+{
+    float q[ROBOTICS_NUM_JOINTS];
+
+    // El comando es el primer token; el resto es su argumento
+    char* arg = line;
+    while(*arg != '\0' && *arg != ' ')
+    {
+        arg++;
+    }
+    if(*arg != '\0')
+    {
+        *arg++ = '\0';
+        while(*arg == ' ')
+        {
+            arg++;
+        }
+    }
+
+    if(Host_StrEqArg(line, "PING"))
+    {
+        Host_SendFormat("OK PONG %s", KR10_FW_VERSION);
+        Host_SendLine("END");
+    }
+    else if(Host_StrEqArg(line, "HELLO"))
+    {
+        Host_SendOk();
+        Host_SendHello();
+    }
+    else if(Host_StrEqArg(line, "STATUS"))
+    {
+        Host_SendOk();
+        Host_SendState();
+    }
+    else if(Host_StrEqArg(line, "LIMITS"))
+    {
+        Host_SendOk();
+        Host_SendLimits();
+    }
+    else if(Host_StrEqArg(line, "MOVE"))
+    {
+        if(!Host_ParseAngles(arg, q))
+        {
+            Host_SendError("ANGLE");
+        }
+        else
+        {
+            Host_StartMove(q, "MANUAL", "MOVE");
+        }
+    }
+    else if(Host_StrEqArg(line, "HOME"))
+    {
+        Host_StartMove(HomePose, "HOME", "HOME");
+    }
+    else if(Host_StrEqArg(line, "SEQ"))
+    {
+        if(Host_StrEqArg(arg, "START"))
+        {
+            Host_StartSequence();
+        }
+        else if(Host_StrEqArg(arg, "STOP"))
+        {
+            Host_StopSequence();
+            Host_SendAck("SEQ STOP");
+            Host_SendSequenceState();
+        }
+        else if(Host_StrEqArg(arg, "STATUS"))
+        {
+            Host_SendOk();
+            Host_SendSequenceState();
+            Host_SendLine("END");
+        }
+        else
+        {
+            Host_SendError("SEQ ARG");
+        }
+    }
+    else if(Host_StrEqArg(line, "OLED"))
+    {
+        if(arg[0] == '\0')
+        {
+            Host_SendError("OLED ARG");
+        }
+        else
+        {
+            Host_SetOledTitle(arg);
+        }
+    }
+    else if(Host_StrEqArg(line, "STOP"))
+    {
+        Host_StopSequence();
+
+        if(moveActive)
+        {
+            // Fijar el objetivo en el ángulo actual cancela el movimiento suave
+            // sin dejar los servos a medio camino de un destino arbitrario
+            for(uint32_t i = 0; i < ROBOTICS_NUM_JOINTS; i++)
+            {
+                servos[i].targetAngle = servos[i].currentAngle;
+                servos[i].isMoving = false;
+            }
+            moveActive = false;
+            Display_ShowArm("DETENIDO");
+        }
+
+        Host_SendAck("STOP");
+        Host_SendState();
+    }
+    else
+    {
+        Host_SendError("CMD");
+    }
+}
+
+/**
+  * @brief Ensambla líneas de comando: eco desactivado, CRLF = fin de línea.
+  *
+  * @param c Byte recibido por USB-CDC.
+  */
+static void Host_HandleByte(uint8_t c)
+{
+    static uint8_t prev = 0;
+
+    // CRLF cuenta como un solo ENTER
+    if(c == '\n' && prev == '\r')
+    {
+        prev = c;
+        return;
+    }
+    prev = c;
+
+    if(c == '\r' || c == '\n')
+    {
+        lineBuf[lineLen] = '\0';
+
+        if(lineLen > 0U)
+        {
+            lineLen = 0;
+            Host_ProcessLine(lineBuf);
+        }
+    }
+    else if(c == '\b' || c == 127U)
+    {
+        if(lineLen > 0U)
+        {
+            lineLen--;
+        }
+    }
+    else if(c >= ' ' && lineLen < (CMD_LINE_SIZE - 1U))
+    {
+        lineBuf[lineLen++] = (char)c;
+    }
+}
+
+#endif /* !KR10_TERMINAL_MENU */
+
+#if KR10_TERMINAL_MENU
 // ============================================================================
 // MENÚ DE USUARIO
 // ============================================================================
@@ -946,6 +1535,7 @@ static void Menu_ProcessLine(char* line)
             CDC_PrintColor(INFO_COLOR, "ℹ Iniciando secuencia...");
             sequenceStep = 0;
             lastMoveTick = HAL_GetTick() - DELAY_TEST_SEQUENCE;    // Primer paso inmediato
+            sequenceActive = true;     // El lazo principal la hace avanzar
             menuState = MENU_SEQUENCE;
             break;
 
@@ -990,6 +1580,7 @@ static void Menu_ProcessLine(char* line)
     case MENU_SEQUENCE:
         // Cualquier línea (incluso vacía) detiene la secuencia
         menuState = MENU_MAIN;
+        sequenceActive = false;
         Display_ShowArm("DETENIDO");
         Menu_ShowMain();
         break;
@@ -1044,6 +1635,8 @@ static void Menu_ProcessAngle(char* line)
     Menu_ShowHeader("MOVIMIENTO MANUAL");
     Menu_MoveBlocking(angleInput, "MANUAL");
 }
+
+#endif /* KR10_TERMINAL_MENU */
 
 /* USER CODE END 4 */
 
