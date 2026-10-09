@@ -1,5 +1,5 @@
 """
-output.py - Shared Rich console and output helpers for all modules
+output.py - Consola Rich compartida y utilidades de salida para todos los módulos
 """
 
 from __future__ import annotations
@@ -87,14 +87,14 @@ def print_subtitle(message: str) -> None:
 
 def print_example(command: str, description: str = "") -> None:
     if description:
-        # Align descriptions somewhat manually if needed, or just print
+        # Alinea las descripciones manualmente si hace falta, o simplemente imprime
         console.print(f"  [green]{command}[/green] {description}")
     else:
         console.print(f"  [green]{command}[/green]")
 
 
 def fmt_command(text: str) -> str:
-    """Mark up `text` as a copy-pasteable command (for use inside messages)."""
+    """Marca `text` como un comando listo para copiar y pegar (para usar dentro de mensajes)."""
     return f"[green]{text}[/green]"
 
 
