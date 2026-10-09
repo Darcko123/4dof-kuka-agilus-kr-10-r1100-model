@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//home/darcko/Documentos/GitHub/STM32/Projects/4DOF_RobotArm/CinematicaDirectaKUKA4DOF/Core/Src/**)"
+    ]
+  }
+}
