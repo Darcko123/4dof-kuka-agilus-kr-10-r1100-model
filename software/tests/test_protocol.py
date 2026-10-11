@@ -41,8 +41,14 @@ class FakeSerial:
 
     @property
     def in_waiting(self):
+        # Como el STM32: cada línea llega en su propio paquete USB
         with self._lock:
-            return len(self._in)
+            i = self._in.find(b"\n")
+            return i + 1 if i >= 0 else len(self._in)
+
+    def reset_input_buffer(self):
+        with self._lock:
+            self._in = b""
 
     def write(self, data):
         text = data.decode().strip()
@@ -150,8 +156,6 @@ class FakeSerial:
                 self._seq_active = False
                 self._send("OK SEQ STOP")
                 self._end()
-                self._send("SEQ IDLE")
-                self._end()
             elif sub == "STATUS":
                 self._send("OK")
                 if self._seq_active:
@@ -248,6 +252,7 @@ def test():
     mudo.t.timeout = 0.3
     mudo.t._serial = FakeMudo("/dev/mudo", 115200)
     mudo.t._buffer = b""
+    mudo.t._lines = []
     try:
         mudo.status()
         print("TIMEOUT-> no se lanzó TimeoutError (fallo)")
