@@ -52,6 +52,7 @@ class Transport:
         self.timeout = timeout
         self._serial: serial.Serial | None = None
         self._buffer = b""
+        self._lines: list[str] = []  # líneas ya extraídas, aún sin entregar
 
     # --- Ciclo de vida -------------------------------------------------------
 
@@ -81,15 +82,20 @@ class Transport:
             raise ConnectionError(f"No se pudo abrir el puerto: {last_error}")
 
         self.port = self._serial.name
+        self._serial.reset_input_buffer()
         self._buffer = b""
+        self._lines = []
 
         # El firmware pierde lo que se le mande hasta estar configurado por
-        # el host, de ahí el ping de espera.
+        # el host, de ahí el ping de espera. Los bloques de una sesión
+        # anterior (p. ej. el TX que el STM32 dejó pendiente) se saltan
+        # hasta ver el PONG, para no quedar desfasados una respuesta.
         deadline = time.monotonic() + wait
         while time.monotonic() < deadline:
             try:
                 self.send(proto.CMD_PING)
-                self.read_block()
+                while not self.read_block()[0].startswith("OK PONG"):
+                    pass
                 return
             except (proto.TimeoutError_, serial.SerialException, OSError):
                 time.sleep(0.25)
@@ -124,46 +130,27 @@ class Transport:
             raise ConnectionError("El puerto no está abierto")
         self._serial.write(f"{command}\r\n".encode("ascii"))
 
-    def read_lines(self, timeout: float | None = None) -> list[str]:
-        """Lee líneas completas hasta agotar el plazo, sin bloqueo."""
-        deadline = time.monotonic() + (self.timeout if timeout is None else timeout)
-
-        while time.monotonic() < deadline:
-            if proto.END in self._payloads():
-                break
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                break
-            if self._serial is None:
-                break
-            waiting = self._serial.in_waiting
-            chunk = self._serial.read(waiting if waiting else 1)
-            if chunk:
-                self._buffer += chunk
-
-        return self._payloads()
-
     def read_block(self, timeout: float | None = None) -> list[str]:
         """Lee un bloque completo de respuesta, hasta el token END.
+
+        El firmware envía cada línea en su propio paquete USB, así que las
+        líneas se acumulan entre lecturas. Lo que llegue tras el END (p. ej.
+        el bloque de estado de STOP) queda pendiente para la siguiente lectura.
 
         :raises proto.TimeoutError_: si no llega el END a tiempo.
         """
         deadline = time.monotonic() + (self.timeout if timeout is None else timeout)
-        payloads: list[str] = []
 
-        while time.monotonic() < deadline:
-            payloads = self._payloads()
-            if proto.END in payloads:
-                return payloads
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                break
-            if self._serial is None:
+        while True:
+            self._lines += self._payloads()
+            if proto.END in self._lines:
+                n = self._lines.index(proto.END) + 1
+                block, self._lines = self._lines[:n], self._lines[n:]
+                return block
+            if time.monotonic() >= deadline or self._serial is None:
                 break
             waiting = self._serial.in_waiting
-            chunk = self._serial.read(waiting if waiting else 1)
-            if chunk:
-                self._buffer += chunk
+            self._buffer += self._serial.read(waiting or 1)
 
         raise proto.TimeoutError_(
             "El STM32 no respondió a tiempo. "
@@ -174,15 +161,6 @@ class Transport:
         """Envía un comando y devuelve su bloque de respuesta."""
         self.send(command)
         return self.read_block(timeout)
-
-    def drain(self, seconds: float = 0.05) -> None:
-        """Descarta lo pendiente sin interpretar, para partir de limpio."""
-        deadline = time.monotonic() + seconds
-        while time.monotonic() < deadline:
-            payloads = self._payloads()
-            if not payloads:
-                break
-        self._buffer = b""
 
     # --- Interno -------------------------------------------------------------
 

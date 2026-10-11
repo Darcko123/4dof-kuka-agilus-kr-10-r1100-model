@@ -156,9 +156,9 @@ class Robot:
 
     def stop(self) -> proto.ArmState:
         """Aborta el movimiento o la secuencia en curso."""
-        block = self.t.request(proto.CMD_STOP, timeout=TIMEOUT_FAST)
-        _raise_on_error(block)
-        return _parse_state(block)
+        # El firmware responde OK STOP + END y después el estado + END
+        _raise_on_error(self.t.request(proto.CMD_STOP, timeout=TIMEOUT_FAST))
+        return _parse_state(self.t.read_block(timeout=TIMEOUT_FAST))
 
     def oled(self, title: str) -> None:
         """Cambia el título de la barra superior de la OLED."""
