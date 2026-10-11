@@ -1132,7 +1132,6 @@ static void Host_ProcessLine(char* line)
         {
             Host_StopSequence();
             Host_SendAck("SEQ STOP");
-            Host_SendSequenceState();
         }
         else if(Host_StrEqArg(arg, "STATUS"))
         {
