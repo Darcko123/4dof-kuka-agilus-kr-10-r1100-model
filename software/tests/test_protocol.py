@@ -80,7 +80,7 @@ class FakeSerial:
     def _state(self):
         for i, q in enumerate(self.q):
             self._send(f"Q {i + 1} {q:.2f}")
-        self._send("POSE 187.00 0.00 65.00 0.00 0.00")
+        self._send("POSE 157.00 0.00 65.00 0.00 0.00")
         self._send(f"OLED {self.oled}")
         self._end()
 
@@ -124,7 +124,7 @@ class FakeSerial:
         elif cmd == "LIMITS":
             self._send("OK")
             for i in range(4):
-                self._send(f"LIM {i + 1} -90.0 90.0")
+                self._send(f"LIM {i + 1} 0.0 180.0")
             self._end()
         elif cmd in ("MOVE", "HOME"):
             if cmd == "HOME":
@@ -135,7 +135,7 @@ class FakeSerial:
                 except ValueError:
                     self._err("ANGLE")
                     return
-                if len(values) != 4 or any(not -90 <= v <= 90 for v in values):
+                if len(values) != 4 or any(not 0 <= v <= 180 for v in values):
                     self._err("ANGLE")
                     return
             self._send(f"OK {cmd}")
@@ -206,7 +206,7 @@ def test():
     estado = robot.status()
     print("STATUS -> Q", estado.q, "pose", (estado.x, estado.y, estado.z))
 
-    estado = robot.move([45, 30, -30, 0])
+    estado = robot.move([45, 30, 30, 0])
     print("MOVE   -> Q", estado.q)
     print("        enviados:", robot.t._serial.received[-1])
 

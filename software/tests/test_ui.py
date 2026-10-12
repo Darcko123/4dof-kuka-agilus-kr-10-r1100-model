@@ -19,12 +19,12 @@ from modules.core import protocol as proto, ui  # noqa: E402
 console = Console(width=80)
 ui.console = console
 
-estado = proto.ArmState(q=[45.0, -22.5, 12.0, -67.25], x=118.4, y=3.2, z=142.7, pitch=18.3, yaw=4.1)
+estado = proto.ArmState(q=[45.0, 22.5, 12.0, 167.25], x=118.4, y=3.2, z=142.7, pitch=18.3, yaw=4.1)
 limites = [
-    proto.JointLimit(0, -90.0, 90.0),
-    proto.JointLimit(1, -90.0, 90.0),
-    proto.JointLimit(2, -90.0, 90.0),
-    proto.JointLimit(3, -90.0, 90.0),
+    proto.JointLimit(0, 0.0, 180.0),
+    proto.JointLimit(1, 0.0, 180.0),
+    proto.JointLimit(2, 0.0, 180.0),
+    proto.JointLimit(3, 0.0, 180.0),
 ]
 
 print("=" * 80)
@@ -46,7 +46,7 @@ print()
 print("=" * 80)
 
 # Casos límite del rango articular
-for angulo in (-90.0, -45.0, 0.0, 45.0, 90.0):
+for angulo in (0.0, 45.0, 90.0, 135.0, 180.0):
     ui.show_arm_state(
         proto.ArmState(q=[angulo] * 4, x=0, y=0, z=0),
         limites,

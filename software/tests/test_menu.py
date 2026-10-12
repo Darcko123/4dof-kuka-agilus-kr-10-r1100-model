@@ -30,7 +30,7 @@ TECLAS = iter(
         "2",  # ángulos manuales
         "45",  # Q1
         "30",  # Q2
-        "-30,5",  # Q3 con coma decimal
+        "30,5",  # Q3 con coma decimal
         "0",  # Q4
         "",  # ENTER
         "9",  # opción inválida
@@ -66,14 +66,14 @@ def test():
     for c in enviados:
         print("  ", c)
 
-    esperados = ["HOME", "MOVE 45.00 30.00 -30.50 0.00", "SEQ START"]
+    esperados = ["HOME", "MOVE 45.00 30.00 30.50 0.00", "SEQ START"]
     faltan = [e for e in esperados if e not in enviados]
     if faltan:
         print("\nFALTAN:", faltan)
         raise SystemExit(1)
 
     # La secuencia solo debe arrancar cuando se elige la opción 1
-    if enviados.index("SEQ START") < enviados.index("MOVE 45.00 30.00 -30.50 0.00"):
+    if enviados.index("SEQ START") < enviados.index("MOVE 45.00 30.00 30.50 0.00"):
         print("\nFALLO: la secuencia arrancó antes de tiempo")
         raise SystemExit(1)
 
