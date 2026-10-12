@@ -74,10 +74,11 @@
 #define ROBOTICS_LGRIP          45.0f   /**< Longitud de la pinza (no incluida en la tabla DH por defecto) */
 
 /**
- * @brief Límites articulares por defecto (rango de 180° del servo centrado en 0).
+ * @brief Límites articulares por defecto: los 0°-180° del servo, con q = 0
+ * en la posición horizontal (tope mecánico del hombro).
  */
-#define ROBOTICS_JOINT_MIN_DEFAULT  (-ROBOTICS_HALF_PI)
-#define ROBOTICS_JOINT_MAX_DEFAULT  ( ROBOTICS_HALF_PI)
+#define ROBOTICS_JOINT_MIN_DEFAULT  (0.0f)
+#define ROBOTICS_JOINT_MAX_DEFAULT  (ROBOTICS_PI)
 
 // ============================================================================
 // ENUMERACIONES Y ESTRUCTURAS

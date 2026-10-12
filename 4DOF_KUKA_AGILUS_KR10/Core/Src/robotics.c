@@ -26,17 +26,18 @@
  * | i | a [mm] | alpha [rad] | d [mm]  | theta                |
  * |---|--------|-------------|---------|----------------------|
  * | 1 | 0      | +pi/2       | H0 + L1 | q1                   |
- * | 2 | L2     | 0           | 0       | -q2 (servo invertido)|
+ * | 2 | L2     | 0           | 0       | q2                   |
  * | 3 | L3     | 0           | 0       | q3                   |
  * | 4 | L4     | 0           | 0       | q4                   |
  *
- * Con q = 0 el brazo queda extendido en horizontal sobre el eje X0.
+ * Con q = 0 el brazo queda extendido en horizontal sobre el eje X0. El
+ * hombro parte de su tope horizontal y q2 > 0 lo levanta (q2 = 90° vertical).
  * Para incluir la pinza, usar a4 = L4 + LGRIP.
  */
 const Robotics_DH_Param_t Robotics_DefaultDHTable[ROBOTICS_NUM_JOINTS] = {
     /*  a             alpha              d                            offset  dir     min                         max                       */
     { 0.0f,         ROBOTICS_HALF_PI,  ROBOTICS_H0 + ROBOTICS_L1,   0.0f,  1.0f,  ROBOTICS_JOINT_MIN_DEFAULT, ROBOTICS_JOINT_MAX_DEFAULT },
-    { ROBOTICS_L2,  0.0f,              0.0f,                        0.0f, -1.0f,  ROBOTICS_JOINT_MIN_DEFAULT, ROBOTICS_JOINT_MAX_DEFAULT },
+    { ROBOTICS_L2,  0.0f,              0.0f,                        0.0f,  1.0f,  ROBOTICS_JOINT_MIN_DEFAULT, ROBOTICS_JOINT_MAX_DEFAULT },
     { ROBOTICS_L3,  0.0f,              0.0f,                        0.0f,  1.0f,  ROBOTICS_JOINT_MIN_DEFAULT, ROBOTICS_JOINT_MAX_DEFAULT },
     { ROBOTICS_L4,  0.0f,              0.0f,                        0.0f,  1.0f,  ROBOTICS_JOINT_MIN_DEFAULT, ROBOTICS_JOINT_MAX_DEFAULT }
 };

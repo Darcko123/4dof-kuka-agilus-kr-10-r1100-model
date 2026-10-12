@@ -61,7 +61,7 @@ typedef enum {
 #define SERVO_PWM_FREQUENCY     50U     /**< Frecuencia PWM para servos [Hz] */
 #define SERVO_UPDATE_INTERVAL   20U     /**< Periodo de actualización del movimiento suave [ms] */
 #define SERVO_MOVE_DURATION     1500U   /**< Duración de cada movimiento [ms] */
-#define SERVO_CENTER_DEG        90.0f   /**< Ángulo del servo correspondiente a q = 0 [°] */
+#define SERVO_ZERO_DEG          0.0f    /**< Ángulo del servo correspondiente a q = 0 (horizontal) [°] */
 
 // ============================================================================
 // INTERFAZ USB-CDC
@@ -114,13 +114,13 @@ I2C_HandleTypeDef hi2c3;
 /** Canal del PCA9685 asignado a cada articulación (base, hombro, codo, muñeca) */
 static const uint8_t JointChannel[ROBOTICS_NUM_JOINTS] = {0, 1, 2, 3};
 
-/** Secuencia de prueba en espacio articular [rad] */
+/** Secuencia de prueba en espacio articular [rad], dentro de 0°-180° */
 static const float TestSequence[TEST_SEQUENCE_LENGTH][ROBOTICS_NUM_JOINTS] = {
 		{ ROBOTICS_DEG2RAD(  0.0f), ROBOTICS_DEG2RAD(  0.0f), ROBOTICS_DEG2RAD(  0.0f), ROBOTICS_DEG2RAD(  0.0f) },
-		{ ROBOTICS_DEG2RAD( 45.0f), ROBOTICS_DEG2RAD( 30.0f), ROBOTICS_DEG2RAD(-30.0f), ROBOTICS_DEG2RAD(  0.0f) },
-		{ ROBOTICS_DEG2RAD(-45.0f), ROBOTICS_DEG2RAD( 30.0f), ROBOTICS_DEG2RAD(-30.0f), ROBOTICS_DEG2RAD(  0.0f) },
-		{ ROBOTICS_DEG2RAD(  0.0f), ROBOTICS_DEG2RAD( 60.0f), ROBOTICS_DEG2RAD(-60.0f), ROBOTICS_DEG2RAD(-30.0f) },
-		{ ROBOTICS_DEG2RAD(  0.0f), ROBOTICS_DEG2RAD( 90.0f), ROBOTICS_DEG2RAD(  0.0f), ROBOTICS_DEG2RAD(  0.0f) }
+		{ ROBOTICS_DEG2RAD( 45.0f), ROBOTICS_DEG2RAD( 30.0f), ROBOTICS_DEG2RAD( 30.0f), ROBOTICS_DEG2RAD(  0.0f) },
+		{ ROBOTICS_DEG2RAD(135.0f), ROBOTICS_DEG2RAD( 30.0f), ROBOTICS_DEG2RAD( 30.0f), ROBOTICS_DEG2RAD(  0.0f) },
+		{ ROBOTICS_DEG2RAD( 90.0f), ROBOTICS_DEG2RAD( 60.0f), ROBOTICS_DEG2RAD( 60.0f), ROBOTICS_DEG2RAD( 30.0f) },
+		{ ROBOTICS_DEG2RAD( 90.0f), ROBOTICS_DEG2RAD( 90.0f), ROBOTICS_DEG2RAD(  0.0f), ROBOTICS_DEG2RAD(  0.0f) }
 };
 
 Robotics_Arm_t arm;                             /**< Estado cinemático del brazo (q, T, pose) */
@@ -496,8 +496,8 @@ static void MX_GPIO_Init(void)
 /**
  * @brief Convierte un ángulo articular al ángulo de comando del servo.
  *
- * @details q = 0 corresponde al centro del servo (SERVO_CENTER_DEG), de modo
- * que el rango articular [-pi/2, pi/2] cubre los 0°-180° del servo. El
+ * @details q = 0 es la posición horizontal, que corresponde a SERVO_ZERO_DEG,
+ * de modo que el rango articular [0, pi] cubre los 0°-180° del servo. El
  * sentido de montaje de cada servo ya está modelado en la tabla DH
  * (campo direction), por lo que aquí no se invierte ningún canal.
  *
@@ -507,7 +507,7 @@ static void MX_GPIO_Init(void)
  */
 static float Arm_JointToServoAngle(float q)
 {
-    return SERVO_CENTER_DEG + ROBOTICS_RAD2DEG(q);
+    return SERVO_ZERO_DEG + ROBOTICS_RAD2DEG(q);
 }
 
 /**
