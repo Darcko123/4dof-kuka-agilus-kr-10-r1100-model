@@ -15,7 +15,7 @@ Una respuesta completa es un bloque de líneas que termina en ``KR10:END``::
     KR10:OK STATUS
     KR10:Q 1 0.00
     ...
-    KR10:POSE 187.00 0.00 65.00 0.00 0.00
+    KR10:POSE 157.00 0.00 65.00 0.00 0.00
     KR10:OLED 1
     KR10:END
 

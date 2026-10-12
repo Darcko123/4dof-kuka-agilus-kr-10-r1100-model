@@ -121,10 +121,8 @@ def show_arm_state(
 ) -> None:
     """Tabla de ángulos articulares con barra de rango y pose del efector."""
     if not limites:
-        # El firmware no devolvió límites: se muestra la tabla sin barra
-        limites = [
-            proto.JointLimit(i, min(estado.q[i] - 90, -90), 90) for i in range(len(estado.q))
-        ]
+        # El firmware no devolvió límites: se asume el rango 0°-180° del servo
+        limites = [proto.JointLimit(i, 0.0, 180.0) for i in range(len(estado.q))]
     if nombres is None:
         nombres = proto.DEFAULT_JOINT_NAMES
 
